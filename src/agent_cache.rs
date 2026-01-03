@@ -1,13 +1,10 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use rig::{agent::Agent, client::CompletionClient, providers::openrouter};
 use strum::EnumString;
 use tokio::sync::Mutex;
 
-use crate::{Error, Result, completion::Completion};
+use crate::completion::Completion;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, strum::Display, EnumString)]
 pub enum AgentModel {
@@ -60,16 +57,4 @@ impl AgentCache {
 
         Completion::new(agent)
     }
-}
-
-static AGENT_CACHE: OnceLock<AgentCache> = OnceLock::new();
-
-pub fn init_static(api_key: &str) {
-    _ = AGENT_CACHE.set(AgentCache::new(api_key));
-}
-
-pub async fn get_agent(model: AgentModel) -> Result<Completion> {
-    let cache = AGENT_CACHE.get().ok_or(Error::Uninitialized)?;
-
-    Ok(cache.get_model(model).await)
 }

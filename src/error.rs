@@ -11,11 +11,8 @@ pub enum Error {
     #[error("Failed to retreive API key: {0}")]
     ApiKey(#[from] ApiKeyError),
 
-    #[error("Buffer error: {0}")]
-    Buffer(#[from] nvim_api_helper::buffer::Error),
-
-    #[error("Nvim dispatch error: {0}")]
-    NvimDispatch(#[from] nvim_api_helper::nvim::async_dispatch::Error),
+    #[error("Eel error: {0}")]
+    Eel(#[from] eel::Error),
 
     #[error("Completion error: {0}")]
     Completion(#[from] crate::completion::Error),
