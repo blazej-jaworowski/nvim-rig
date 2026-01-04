@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 eel = { version = "0.0.1", git = "https://github.com/blazej-jaworowski/eel" }
-eel-nvim = { version = "0.0.1", git = "https://github.com/blazej-jaworowski/eel-nvim" }
+eel-nvim = { version = "0.0.1", git = "https://github.com/blazej-jaworowski/eel" }
 
 rig-core = { version = "0.24.0", default-features = false, features = ["reqwest-rustls"] }
 thiserror = "2.0.17"

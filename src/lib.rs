@@ -77,7 +77,7 @@ pub async fn prompt_buffer() -> Result<()> {
         get_instance()?.agent_cache.clone(),
     );
 
-    buffer.perform_prompt(AgentModel::ClaudeOpus).await?;
+    buffer.perform_prompt(AgentModel::GeminiSmart).await?;
 
     Ok(())
 }
