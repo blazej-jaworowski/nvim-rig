@@ -1,4 +1,10 @@
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use itertools::Itertools as _;
 use rig::message::Message;
@@ -8,9 +14,11 @@ use futures::TryStreamExt;
 use tracing::instrument;
 
 use eel::{
-    Editor,
-    buffer::{Buffer, BufferHandle},
-    cursor::CursorBuffer,
+    CompleteBufferHandle, Editor, async_runtime,
+    buffer::{BufferHandle, ReadBuffer as _, WriteBuffer},
+    cursor::CursorWriteBuffer,
+    mark::Mark,
+    region::BufferRegion,
 };
 
 use crate::{
@@ -27,7 +35,6 @@ const USER_HEADER: &str = "# ** ------- User -------- **";
 pub struct CompletionBuffer<E>
 where
     E: Editor,
-    E::Buffer: CursorBuffer,
 {
     #[derivative(Debug = "ignore")]
     inner: E::BufferHandle,
@@ -39,7 +46,7 @@ where
 impl<E> CompletionBuffer<E>
 where
     E: Editor,
-    E::Buffer: CursorBuffer,
+    E::BufferHandle: CompleteBufferHandle,
 {
     fn parse_content(&self) -> impl Future<Output = Result<(String, Vec<Message>)>> + Send {
         let fut = self.inner.read();
@@ -125,6 +132,34 @@ where
         }
     }
 
+    pub async fn run_indicator(
+        finished: Arc<AtomicBool>,
+        status_region: BufferRegion<E::BufferHandle>,
+    ) -> Result<()> {
+        let mut indicator = ["/", "-", "\\", "|"].into_iter().cycle();
+
+        let mut lock = status_region.write().await;
+
+        lock.set_content("\nGenerating... ").await?;
+
+        let max_pos = lock.max_pos().await?;
+        let indicator_region = BufferRegion::new(&status_region, &max_pos, &max_pos, lock).await?;
+
+        while !finished.load(Ordering::Relaxed) {
+            let mut lock = indicator_region.write().await;
+
+            lock.set_content(indicator.next().unwrap()).await?;
+
+            drop(lock);
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        status_region.write().await.set_content("").await?;
+
+        Ok::<_, crate::Error>(())
+    }
+
     #[instrument(level = "trace")]
     pub async fn perform_prompt(&self, model: AgentModel) -> Result<()> {
         let agent = self.agent_cache.get_model(model).await;
@@ -132,19 +167,39 @@ where
 
         let mut stream = agent.stream_chat(&prompt, messages).await;
 
-        self.inner
-            .write()
-            .await
-            .append(&format!("\n\n{ASSISTANT_HEADER}\n\n"))
+        let mut lock = self.inner.write().await;
+
+        lock.append(&format!("\n\n{ASSISTANT_HEADER}\n\n\n"))
             .await?;
+
+        let max_pos = lock.max_pos().await?;
+        let insert_mark = Mark::new(&self.inner, &max_pos.clone().prev_row(), &mut *lock).await?;
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let status_region = BufferRegion::new(&self.inner, &max_pos, &max_pos, &mut *lock).await?;
+
+        drop(lock);
+
+        let status_handle =
+            async_runtime::spawn(Self::run_indicator(finished.clone(), status_region));
 
         while let Some(chunk) = stream.try_next().await? {
             match chunk {
                 CompletionChunk::Text(text) => {
-                    self.inner.write().await.append(&text).await?;
+                    let mut lock = self.inner.write().await;
+
+                    let pos = insert_mark.read(&*lock).get_position().await?;
+
+                    lock.append_at_position(&pos, &text).await?;
                 }
             }
         }
+
+        finished.store(true, Ordering::Relaxed);
+        status_handle
+            .await
+            .map_err(eel::async_runtime::Error::from)
+            .map_err(eel::Error::AsyncRuntime)??;
 
         self.inner
             .write()

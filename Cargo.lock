@@ -220,8 +220,8 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "eel"
-version = "0.0.1"
-source = "git+https://github.com/blazej-jaworowski/eel#d36a19e83168e1382ab40484aaa69c00241b0f63"
+version = "0.0.2"
+source = "git+https://github.com/blazej-jaworowski/eel#9ff70496f19f0fa4264fda817251d8b71794ab3a"
 dependencies = [
  "async-trait",
  "itertools",
@@ -235,8 +235,8 @@ dependencies = [
 
 [[package]]
 name = "eel-nvim"
-version = "0.0.1"
-source = "git+https://github.com/blazej-jaworowski/eel#c8ae73677f6cc2b8525ef34c5867e6026981a693"
+version = "0.0.2"
+source = "git+https://github.com/blazej-jaworowski/eel#9ff70496f19f0fa4264fda817251d8b71794ab3a"
 dependencies = [
  "async-trait",
  "derivative",
@@ -1130,7 +1130,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1711,6 +1711,7 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

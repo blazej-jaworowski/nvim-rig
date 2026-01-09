@@ -7,7 +7,7 @@ use crate::{
     agent_cache::{AgentCache, AgentModel},
     api_key::get_api_key,
 };
-use eel::{Editor, cursor::CursorBuffer};
+use eel::{CompleteBufferHandle, Editor};
 
 mod error;
 
@@ -24,7 +24,7 @@ type Result<T> = std::result::Result<T, Error>;
 struct Plugin<E>
 where
     E: Editor,
-    E::Buffer: CursorBuffer,
+    E::BufferHandle: CompleteBufferHandle,
 {
     editor: Arc<E>,
     agent_cache: Arc<AgentCache>,
@@ -33,7 +33,7 @@ where
 impl<E> Plugin<E>
 where
     E: Editor,
-    E::Buffer: CursorBuffer,
+    E::BufferHandle: CompleteBufferHandle,
 {
     fn new(editor: Arc<E>, api_key: &str) -> Self {
         Self {
@@ -77,7 +77,7 @@ pub async fn prompt_buffer() -> Result<()> {
         get_instance()?.agent_cache.clone(),
     );
 
-    buffer.perform_prompt(AgentModel::GeminiSmart).await?;
+    buffer.perform_prompt(AgentModel::GeminiFast).await?;
 
     Ok(())
 }
