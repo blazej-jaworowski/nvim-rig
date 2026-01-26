@@ -1,65 +1,71 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
-use rig::{agent::Agent, client::CompletionClient, providers::openrouter};
-use strum::EnumString;
+use parking_lot::RwLock;
+use rig::{client::CompletionClient, providers::openrouter::Client};
+use tokio::runtime::Runtime;
 
 use crate::completion::Completion;
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, strum::Display, EnumString)]
-pub enum AgentModel {
-    #[strum(serialize = "google/gemini-2.5-flash")]
-    GeminiFast,
-
-    #[strum(serialize = "google/gemini-3-pro-preview")]
-    GeminiSmart,
-
-    #[strum(serialize = "anthropic/claude-opus-4.5")]
-    ClaudeOpus,
+lazy_static::lazy_static! {
+    static ref AVAILABLE_MODELS: HashMap<&'static str, &'static str> =  {
+        HashMap::from([
+            ("GeminiFlash", "google/gemini-3-flash-preview"),
+            ("GeminiPro", "google/gemini-3-pro-preview"),
+            ("ClaudeOpus", "anthropic/claude-opus-4.5"),
+        ])
+    };
 }
 
-struct AgentFactory {
-    client: openrouter::Client,
-    runtime: tokio::runtime::Runtime,
+struct CompletionFactory {
+    client: Client,
+    runtime: Arc<Runtime>,
 }
 
-impl AgentFactory {
-    pub fn new(api_key: &str) -> Self {
+impl CompletionFactory {
+    pub fn new(api_key: &str, runtime: Arc<Runtime>) -> Self {
         Self {
-            client: openrouter::Client::new(api_key),
-            runtime: tokio::runtime::Runtime::new().expect("Failed to create runtime"),
+            client: Client::new(api_key),
+            runtime,
         }
     }
 
-    pub fn create_agent(&self, model: AgentModel) -> Agent<openrouter::CompletionModel> {
-        self.runtime
-            .block_on(async { self.client.agent(&model.to_string()).build() })
+    pub fn create_completion(&self, model: &str) -> Completion {
+        // Rig agent builder requires to be in tokio context
+        let agent = self
+            .runtime
+            .block_on(async { self.client.agent(model).build() });
+
+        Completion::new(agent, self.runtime.clone())
     }
 }
 
-pub struct AgentCache {
-    factory: AgentFactory,
-    agents: Mutex<HashMap<AgentModel, Arc<Agent<openrouter::CompletionModel>>>>,
+pub struct CompletionCache {
+    factory: CompletionFactory,
+    agents: RwLock<HashMap<String, Arc<Completion>>>,
 }
 
-impl AgentCache {
-    pub fn new(api_key: &str) -> Self {
+impl CompletionCache {
+    pub fn new(api_key: &str, runtime: Arc<Runtime>) -> Self {
         Self {
-            factory: AgentFactory::new(api_key),
-            agents: Mutex::new(HashMap::new()),
+            factory: CompletionFactory::new(api_key, runtime),
+            agents: RwLock::new(HashMap::new()),
         }
     }
 
-    pub fn get_model(&self, model: AgentModel) -> Completion {
-        let mut agents_guard = self.agents.lock().expect("Agent lock failed");
+    pub fn get_model(&self, model: &str) -> Arc<Completion> {
+        {
+            let agents_guard = self.agents.read();
 
-        let agent = agents_guard
-            .entry(model)
-            .or_insert_with(|| Arc::new(self.factory.create_agent(model)))
-            .clone();
+            if let Some(agent) = agents_guard.get(model) {
+                return agent.clone();
+            }
+        }
 
-        Completion::new(agent)
+        let mut agents_guard = self.agents.write();
+
+        agents_guard
+            .entry(model.into())
+            .or_insert_with(|| Arc::new(self.factory.create_completion(model)))
+            .clone()
     }
 }

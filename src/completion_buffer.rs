@@ -19,11 +19,7 @@ use eel::{
     region::BufferRegion,
 };
 
-use crate::{
-    Result,
-    agent_cache::{AgentCache, AgentModel},
-    completion::CompletionChunk,
-};
+use crate::{Result, agent_cache::CompletionCache, completion::CompletionChunk};
 
 const ASSISTANT_HEADER: &str = "# ** ----- Assistant ----- **";
 const USER_HEADER: &str = "# ** ------- User -------- **";
@@ -38,7 +34,7 @@ where
     inner: E::BufferHandle,
 
     #[derivative(Debug = "ignore")]
-    agent_cache: Arc<AgentCache>,
+    agent_cache: Arc<CompletionCache>,
 }
 
 impl<E> CompletionBuffer<E>
@@ -104,7 +100,8 @@ where
             Ok((String::new(), messages))
         }
     }
-    pub fn create_new(editor: Arc<E>, agent_cache: Arc<AgentCache>) -> Result<Self> {
+
+    pub fn create_new(editor: Arc<E>, agent_cache: Arc<CompletionCache>) -> Result<Self> {
         let buf = editor.new_buffer()?;
         {
             let mut buf = buf.write();
@@ -120,14 +117,14 @@ where
         Ok(Self::create_from(buf, agent_cache))
     }
 
-    pub fn create_from(buf_handle: E::BufferHandle, agent_cache: Arc<AgentCache>) -> Self {
+    pub fn create_from(buf_handle: E::BufferHandle, agent_cache: Arc<CompletionCache>) -> Self {
         Self {
             inner: buf_handle,
             agent_cache,
         }
     }
 
-    pub fn run_indicator(
+    fn run_indicator(
         finished: Arc<AtomicBool>,
         status_region: BufferRegion<E::BufferHandle>,
     ) -> Result<()> {
@@ -155,8 +152,24 @@ where
         Ok::<_, crate::Error>(())
     }
 
+    fn insert_response(
+        response_stream: impl Iterator<Item = Result<CompletionChunk>>,
+        insert_mark: Mark<E::BufferHandle>,
+    ) -> Result<()> {
+        for chunk in response_stream {
+            match chunk? {
+                CompletionChunk::Text(text) => {
+                    insert_mark.lock_write().append_at(&text)?;
+                }
+                CompletionChunk::Unsupported => {}
+            }
+        }
+
+        Ok(())
+    }
+
     #[instrument(level = "trace")]
-    pub fn perform_prompt(&self, model: AgentModel) -> Result<()> {
+    pub fn perform_prompt(&self, model: &str) -> Result<()> {
         let agent = self.agent_cache.get_model(model);
         let (prompt, messages) = self.parse_content()?;
 
@@ -179,27 +192,21 @@ where
             std::thread::spawn(move || Self::run_indicator(finished, status_region))
         };
 
-        for chunk in stream {
-            match chunk? {
-                CompletionChunk::Text(text) => {
-                    let mut lock = self.inner.write();
-
-                    let pos = insert_mark.read(&*lock).get_position()?;
-
-                    lock.append_at_position(&pos, &text)?;
-                }
-            }
-        }
+        let insert_result = Self::insert_response(stream, insert_mark);
 
         finished.store(true, Ordering::Relaxed);
         status_handle
             .join()
             .expect("Failed to join status thread")?;
 
+        if insert_result.is_err() {
+            self.inner.write().append("\n\nInference failed\n\n")?;
+        }
+
         self.inner
             .write()
             .append(&format!("\n\n{USER_HEADER}\n\n"))?;
 
-        Ok(())
+        insert_result
     }
 }

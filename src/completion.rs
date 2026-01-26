@@ -4,13 +4,16 @@ use futures::StreamExt;
 use rig::{
     agent::{Agent, MultiTurnStreamItem},
     message::Message,
-    providers::openrouter,
+    providers::openrouter::{CompletionModel, streaming::FinalCompletionResponse},
     streaming::{StreamedAssistantContent, StreamingChat},
 };
+use tokio::runtime::Runtime;
+
+use crate::Result;
 
 pub struct Completion {
-    agent: Arc<Agent<openrouter::CompletionModel>>,
-    runtime: tokio::runtime::Runtime,
+    agent: Agent<CompletionModel>,
+    runtime: Arc<Runtime>,
 }
 
 impl std::fmt::Debug for Completion {
@@ -24,6 +27,8 @@ impl std::fmt::Debug for Completion {
 #[derive(Debug)]
 pub enum CompletionChunk {
     Text(String),
+
+    Unsupported,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -32,19 +37,44 @@ pub enum Error {
     Rig(String),
 }
 
-type Result<T> = std::result::Result<T, Error>;
-
 impl Completion {
-    pub fn new(agent: Arc<Agent<openrouter::CompletionModel>>) -> Self {
-        Self {
-            agent,
-            runtime: tokio::runtime::Runtime::new().expect("Failed to create runtime"),
-        }
+    pub fn new(agent: Agent<CompletionModel>, runtime: Arc<Runtime>) -> Self {
+        Self { agent, runtime }
     }
 
     #[allow(dead_code)]
     pub fn stream_prompt(&self, prompt: &str) -> impl IntoIterator<Item = Result<CompletionChunk>> {
         self.stream_chat(prompt, Vec::new())
+    }
+
+    fn map_chunk<E>(
+        chunk: std::result::Result<MultiTurnStreamItem<FinalCompletionResponse>, E>,
+    ) -> Result<CompletionChunk>
+    where
+        E: std::error::Error,
+    {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(Error::Rig(e.to_string()).into());
+            }
+        };
+
+        let assistant_item = match chunk {
+            MultiTurnStreamItem::StreamAssistantItem(i) => i,
+            _ => return Ok(CompletionChunk::Unsupported),
+        };
+
+        let mapped_chunk = match assistant_item {
+            StreamedAssistantContent::Text(content) => CompletionChunk::Text(content.text().into()),
+            StreamedAssistantContent::Reasoning(_) => {
+                // Ignore for now, openrouter doesn't seem to support reasoning tokens
+                CompletionChunk::Unsupported
+            }
+            _ => CompletionChunk::Unsupported,
+        };
+
+        Ok(mapped_chunk)
     }
 
     pub fn stream_chat(
@@ -59,30 +89,8 @@ impl Completion {
         self.runtime.spawn(async move {
             let mut stream = stream.await;
             while let Some(chunk) = stream.next().await {
-                let chunk = match chunk {
-                    Ok(c) => c,
-                    Err(e) => {
-                        _ = tx.send(Err(Error::Rig(e.to_string())));
-                        continue;
-                    }
-                };
-
-                let assistant_item = match chunk {
-                    MultiTurnStreamItem::StreamAssistantItem(i) => i,
-                    _ => continue,
-                };
-
-                match assistant_item {
-                    StreamedAssistantContent::Text(content) => {
-                        _ = tx.send(Ok(CompletionChunk::Text(content.text().into())));
-                        continue;
-                    }
-                    StreamedAssistantContent::Reasoning(_) => {
-                        // Ignore for now, openrouter doesn't seem to support reasoning tokens
-                        continue;
-                    }
-                    _ => continue,
-                };
+                // TODO: Handle this error
+                _ = tx.send(Self::map_chunk(chunk));
             }
         });
 

@@ -3,10 +3,7 @@ use std::sync::{Arc, OnceLock};
 use eel_nvim::editor::NvimEditor;
 use tracing::debug;
 
-use crate::{
-    agent_cache::{AgentCache, AgentModel},
-    api_key::get_api_key,
-};
+use crate::{agent_cache::CompletionCache, api_key::get_api_key};
 use eel::{CompleteBufferHandle, Editor};
 
 mod error;
@@ -27,7 +24,7 @@ where
     E::BufferHandle: CompleteBufferHandle,
 {
     editor: Arc<E>,
-    agent_cache: Arc<AgentCache>,
+    agent_cache: Arc<CompletionCache>,
 }
 
 impl<E> Plugin<E>
@@ -35,11 +32,14 @@ where
     E: Editor,
     E::BufferHandle: CompleteBufferHandle,
 {
-    fn new(editor: Arc<E>, api_key: &str) -> Self {
-        Self {
+    fn new(editor: Arc<E>, api_key: &str) -> Result<Self> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let cache = CompletionCache::new(api_key, Arc::new(runtime));
+
+        Ok(Self {
             editor,
-            agent_cache: Arc::new(AgentCache::new(api_key)),
-        }
+            agent_cache: Arc::new(cache),
+        })
     }
 }
 
@@ -55,7 +55,7 @@ pub fn setup_rig(editor: Arc<NvimEditor>, api_key_location: &str) -> Result<()> 
     debug!("Initializing nvim-rig");
 
     _ = PLUGIN
-        .set(Plugin::new(editor, &api_key))
+        .set(Plugin::new(editor, &api_key)?)
         .inspect_err(|_| tracing::warn!("Rig setup called more than once"));
 
     Ok(())
@@ -76,7 +76,7 @@ pub fn prompt_buffer() -> Result<()> {
         get_instance()?.agent_cache.clone(),
     );
 
-    buffer.perform_prompt(AgentModel::GeminiFast)?;
+    buffer.perform_prompt("google/gemini-3-flash-preview")?;
 
     Ok(())
 }
