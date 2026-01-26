@@ -1,15 +1,17 @@
 use std::{
+    collections::HashMap,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use itertools::Itertools as _;
+use regex::Regex;
 use rig::message::Message;
 
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use eel::{
     CompleteBufferHandle, Editor,
@@ -21,35 +23,70 @@ use eel::{
 
 use crate::{Result, agent_cache::CompletionCache, completion::CompletionChunk};
 
+pub const DEFAULT_MODEL_NAME: &str = "GeminiFlash";
+
+static MODEL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^# Chosen model: (\w+)$").expect("Invalid regex for header"));
+
+static AVAILABLE_MODELS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    HashMap::from([
+        ("GeminiFlash", "google/gemini-3-flash-preview"),
+        ("GeminiPro", "google/gemini-3-pro-preview"),
+        ("ClaudeOpus", "anthropic/claude-opus-4.5"),
+    ])
+});
+
+static DEFAULT_MODEL: LazyLock<&'static str> = LazyLock::new(|| {
+    AVAILABLE_MODELS
+        .get(DEFAULT_MODEL_NAME)
+        .expect("Invalid default model name")
+});
+
 const ASSISTANT_HEADER: &str = "# ** ----- Assistant ----- **";
 const USER_HEADER: &str = "# ** ------- User -------- **";
 
-#[derive(derivative::Derivative)]
-#[derivative(Debug)]
-pub struct CompletionBuffer<E>
-where
-    E: Editor,
-{
-    #[derivative(Debug = "ignore")]
-    inner: E::BufferHandle,
-
-    #[derivative(Debug = "ignore")]
-    agent_cache: Arc<CompletionCache>,
+struct CompletionBufferInfo {
+    model: String,
+    prompt: String,
+    history: Vec<Message>,
 }
 
-impl<E> CompletionBuffer<E>
-where
-    E: Editor,
-    E::BufferHandle: CompleteBufferHandle,
-{
-    fn parse_content(&self) -> Result<(String, Vec<Message>)> {
-        let buffer = self.inner.read();
+impl CompletionBufferInfo {
+    fn parse_content(text: impl Iterator<Item = String>) -> Self {
+        // TODO: This needs refactor
 
-        let mut lines = buffer.get_all_lines()?.peekable();
+        let mut lines = text.peekable();
+
+        let model = if let Some(model_line) = lines.peek()
+            && let Some(captures) = MODEL_REGEX.captures(model_line)
+            && let Some(model_name) = captures.get(1)
+            && let Some(model) = AVAILABLE_MODELS.get(model_name.as_str())
+        {
+            debug!("Model provided");
+            _ = lines.next();
+            model.trim().to_string()
+        } else {
+            debug!("Valid model not provided, using default");
+            DEFAULT_MODEL.to_string()
+        };
+
+        debug!("Using model: {model}");
+
+        while let Some(line) = lines.peek() {
+            if line.is_empty() {
+                lines.next();
+            } else {
+                break;
+            }
+        }
 
         // Valid content should start with USER_HEADER
         if !matches!(lines.peek().map(String::as_str), Some(USER_HEADER)) {
-            return Ok((lines.join("\n"), Vec::new()));
+            return CompletionBufferInfo {
+                model,
+                prompt: lines.join("\n"),
+                history: Vec::new(),
+            };
         }
 
         let mut messages: Vec<Message> = Vec::new();
@@ -94,19 +131,48 @@ where
         }
 
         if is_user_message {
-            Ok((partial_msg, messages))
+            CompletionBufferInfo {
+                model,
+                prompt: partial_msg,
+                history: messages,
+            }
         } else {
             messages.push(Message::assistant(partial_msg));
-            Ok((String::new(), messages))
+            CompletionBufferInfo {
+                model,
+                prompt: String::new(),
+                history: messages,
+            }
         }
     }
+}
 
+#[derive(derivative::Derivative)]
+#[derivative(Debug)]
+pub struct CompletionBuffer<E>
+where
+    E: Editor,
+{
+    #[derivative(Debug = "ignore")]
+    inner: E::BufferHandle,
+
+    #[derivative(Debug = "ignore")]
+    agent_cache: Arc<CompletionCache>,
+}
+
+impl<E> CompletionBuffer<E>
+where
+    E: Editor,
+    E::BufferHandle: CompleteBufferHandle,
+{
     pub fn create_new(editor: Arc<E>, agent_cache: Arc<CompletionCache>) -> Result<Self> {
         let buf = editor.new_buffer()?;
         {
             let mut buf = buf.write();
 
-            buf.set_content(&format!("{USER_HEADER}\n\n"))?;
+            buf.append(&format!("# Chosen model: {DEFAULT_MODEL_NAME}\n\n"))?;
+
+            buf.append(&format!("{USER_HEADER}\n\n"))?;
 
             editor.set_current_buffer(&mut buf)?;
 
@@ -169,11 +235,16 @@ where
     }
 
     #[instrument(level = "trace")]
-    pub fn perform_prompt(&self, model: &str) -> Result<()> {
-        let agent = self.agent_cache.get_model(model);
-        let (prompt, messages) = self.parse_content()?;
+    pub fn perform_prompt(&self) -> Result<()> {
+        let info = {
+            let lock = self.inner.read();
+            let lines = lock.get_all_lines()?;
+            CompletionBufferInfo::parse_content(lines)
+        };
 
-        let stream = agent.stream_chat(&prompt, messages).into_iter();
+        let agent = self.agent_cache.get_model(&info.model);
+
+        let stream = agent.stream_chat(&info.prompt, info.history).into_iter();
 
         let mut lock = self.inner.write();
 

@@ -6,16 +6,6 @@ use tokio::runtime::Runtime;
 
 use crate::completion::Completion;
 
-lazy_static::lazy_static! {
-    static ref AVAILABLE_MODELS: HashMap<&'static str, &'static str> =  {
-        HashMap::from([
-            ("GeminiFlash", "google/gemini-3-flash-preview"),
-            ("GeminiPro", "google/gemini-3-pro-preview"),
-            ("ClaudeOpus", "anthropic/claude-opus-4.5"),
-        ])
-    };
-}
-
 struct CompletionFactory {
     client: Client,
     runtime: Arc<Runtime>,

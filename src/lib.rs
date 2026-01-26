@@ -76,7 +76,7 @@ pub fn prompt_buffer() -> Result<()> {
         get_instance()?.agent_cache.clone(),
     );
 
-    buffer.perform_prompt("google/gemini-3-flash-preview")?;
+    buffer.perform_prompt()?;
 
     Ok(())
 }
