@@ -61,23 +61,22 @@ pub fn setup_rig(editor: Arc<NvimEditor>, api_key_location: &str) -> Result<()> 
     Ok(())
 }
 
-pub async fn setup_prompt_buffer() -> Result<()> {
+pub fn setup_prompt_buffer() -> Result<()> {
     CompletionBuffer::<NvimEditor>::create_new(
         get_instance()?.editor.clone(),
         get_instance()?.agent_cache.clone(),
-    )
-    .await?;
+    )?;
 
     Ok(())
 }
 
-pub async fn prompt_buffer() -> Result<()> {
+pub fn prompt_buffer() -> Result<()> {
     let buffer = CompletionBuffer::<NvimEditor>::create_from(
-        get_instance()?.editor.current_buffer().await?,
+        get_instance()?.editor.current_buffer()?,
         get_instance()?.agent_cache.clone(),
     );
 
-    buffer.perform_prompt(AgentModel::GeminiFast).await?;
+    buffer.perform_prompt(AgentModel::GeminiFast)?;
 
     Ok(())
 }

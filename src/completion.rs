@@ -1,7 +1,6 @@
-use std::{pin::Pin, sync::Arc};
+use std::sync::Arc;
 
-use async_stream::stream;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use rig::{
     agent::{Agent, MultiTurnStreamItem},
     message::Message,
@@ -11,6 +10,7 @@ use rig::{
 
 pub struct Completion {
     agent: Arc<Agent<openrouter::CompletionModel>>,
+    runtime: tokio::runtime::Runtime,
 }
 
 impl std::fmt::Debug for Completion {
@@ -36,32 +36,35 @@ type Result<T> = std::result::Result<T, Error>;
 
 impl Completion {
     pub fn new(agent: Arc<Agent<openrouter::CompletionModel>>) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            runtime: tokio::runtime::Runtime::new().expect("Failed to create runtime"),
+        }
     }
 
     #[allow(dead_code)]
-    pub async fn stream_prompt(
-        &self,
-        prompt: &str,
-    ) -> Pin<Box<dyn Stream<Item = Result<CompletionChunk>> + Send>> {
-        self.stream_chat(prompt, Vec::new()).await
+    pub fn stream_prompt(&self, prompt: &str) -> impl IntoIterator<Item = Result<CompletionChunk>> {
+        self.stream_chat(prompt, Vec::new())
     }
 
-    pub async fn stream_chat(
+    pub fn stream_chat(
         &self,
         prompt: &str,
         chat_history: Vec<Message>,
-    ) -> Pin<Box<dyn Stream<Item = Result<CompletionChunk>> + Send>> {
-        let mut stream = self.agent.stream_chat(prompt, chat_history).await;
+    ) -> impl IntoIterator<Item = Result<CompletionChunk>> {
+        let stream = self.agent.stream_chat(prompt, chat_history);
 
-        let out_stream = stream! {
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        self.runtime.spawn(async move {
+            let mut stream = stream.await;
             while let Some(chunk) = stream.next().await {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
-                        yield Err(Error::Rig(e.to_string()));
+                        _ = tx.send(Err(Error::Rig(e.to_string())));
                         continue;
-                    },
+                    }
                 };
 
                 let assistant_item = match chunk {
@@ -71,18 +74,18 @@ impl Completion {
 
                 match assistant_item {
                     StreamedAssistantContent::Text(content) => {
-                        yield Ok(CompletionChunk::Text(content.text().into()));
+                        _ = tx.send(Ok(CompletionChunk::Text(content.text().into())));
                         continue;
-                    },
+                    }
                     StreamedAssistantContent::Reasoning(_) => {
                         // Ignore for now, openrouter doesn't seem to support reasoning tokens
                         continue;
-                    },
+                    }
                     _ => continue,
                 };
             }
-        };
+        });
 
-        Box::pin(out_stream)
+        rx
     }
 }

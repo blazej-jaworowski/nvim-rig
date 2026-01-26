@@ -1,8 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use rig::{agent::Agent, client::CompletionClient, providers::openrouter};
 use strum::EnumString;
-use tokio::sync::Mutex;
 
 use crate::completion::Completion;
 
@@ -20,17 +22,20 @@ pub enum AgentModel {
 
 struct AgentFactory {
     client: openrouter::Client,
+    runtime: tokio::runtime::Runtime,
 }
 
 impl AgentFactory {
     pub fn new(api_key: &str) -> Self {
         Self {
             client: openrouter::Client::new(api_key),
+            runtime: tokio::runtime::Runtime::new().expect("Failed to create runtime"),
         }
     }
 
     pub fn create_agent(&self, model: AgentModel) -> Agent<openrouter::CompletionModel> {
-        self.client.agent(&model.to_string()).build()
+        self.runtime
+            .block_on(async { self.client.agent(&model.to_string()).build() })
     }
 }
 
@@ -47,8 +52,8 @@ impl AgentCache {
         }
     }
 
-    pub async fn get_model(&self, model: AgentModel) -> Completion {
-        let mut agents_guard = self.agents.lock().await;
+    pub fn get_model(&self, model: AgentModel) -> Completion {
+        let mut agents_guard = self.agents.lock().expect("Agent lock failed");
 
         let agent = agents_guard
             .entry(model)
