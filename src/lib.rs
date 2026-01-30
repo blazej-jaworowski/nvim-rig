@@ -3,7 +3,9 @@ use std::sync::{Arc, OnceLock};
 use eel_nvim::editor::NvimEditor;
 use tracing::debug;
 
-use crate::{agent_cache::CompletionCache, api_key::get_api_key};
+use crate::{
+    agent_cache::CompletionCache, api_key::get_api_key, completion_buffer::CompletionBufferConfig,
+};
 use eel::{CompleteBufferHandle, Editor};
 
 mod error;
@@ -74,6 +76,7 @@ pub fn prompt_buffer() -> Result<()> {
     let buffer = CompletionBuffer::<NvimEditor>::create_from(
         get_instance()?.editor.current_buffer()?,
         get_instance()?.agent_cache.clone(),
+        CompletionBufferConfig::default(),
     );
 
     buffer.perform_prompt()?;

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc, LazyLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -11,7 +11,7 @@ use itertools::Itertools as _;
 use regex::Regex;
 use rig::message::Message;
 
-use tracing::{debug, instrument};
+use tracing::{debug, error, instrument};
 
 use eel::{
     CompleteBufferHandle, Editor,
@@ -23,52 +23,97 @@ use eel::{
 
 use crate::{Result, agent_cache::CompletionCache, completion::CompletionChunk};
 
-pub const DEFAULT_MODEL_NAME: &str = "GeminiFlash";
-
-static MODEL_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^# Chosen model: (\w+)$").expect("Invalid regex for header"));
-
-static AVAILABLE_MODELS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    HashMap::from([
-        ("GeminiFlash", "google/gemini-3-flash-preview"),
-        ("GeminiPro", "google/gemini-3-pro-preview"),
-        ("ClaudeOpus", "anthropic/claude-opus-4.5"),
-    ])
-});
-
-static DEFAULT_MODEL: LazyLock<&'static str> = LazyLock::new(|| {
-    AVAILABLE_MODELS
-        .get(DEFAULT_MODEL_NAME)
-        .expect("Invalid default model name")
-});
-
-const ASSISTANT_HEADER: &str = "# ** ----- Assistant ----- **";
-const USER_HEADER: &str = "# ** ------- User -------- **";
-
 struct CompletionBufferInfo {
     model: String,
     prompt: String,
     history: Vec<Message>,
 }
 
-impl CompletionBufferInfo {
-    fn parse_content(text: impl Iterator<Item = String>) -> Self {
+#[derive(Debug)]
+pub struct CompletionBufferConfig {
+    assisstant_header: String,
+    user_header: String,
+
+    available_models: HashMap<String, String>,
+    default_model_name: String,
+    default_model: String,
+
+    model_header_format: String,
+    model_header_regex: Regex,
+}
+
+impl Default for CompletionBufferConfig {
+    fn default() -> Self {
+        let available_models = [
+            ("GeminiFlash", "google/gemini-3-flash-preview:online"),
+            ("GeminiPro", "google/gemini-3-pro-preview:online"),
+            ("ClaudeOpus", "anthropic/claude-opus-4.5:online"),
+        ]
+        .map(|(name, model)| (name.to_string(), model.to_string()));
+
+        let (default_model_name, default_model) = available_models
+            .first()
+            .expect("No available models is invalid")
+            .clone();
+
+        let model_header_format = String::from("# Chosen model: %MODEL%");
+
+        let regex = model_header_format.replace("%MODEL%", r"(\w+)");
+        let regex = format!("^{regex}$");
+
+        Self {
+            assisstant_header: "# ** ----- Assistant ----- **".into(),
+            user_header: "# ** ------- User -------- **".into(),
+            available_models: HashMap::from(available_models),
+            default_model_name,
+            default_model,
+            model_header_format,
+            model_header_regex: Regex::new(&regex).expect("Invalid model header regex"),
+        }
+    }
+}
+
+impl CompletionBufferConfig {
+    fn parse_model_line(&self, model_line: &str) -> Option<String> {
+        let captures = self.model_header_regex.captures(model_line)?;
+        let model_name = captures.get(1)?.as_str();
+
+        Some(model_name.trim().to_string())
+    }
+
+    fn parse_content(&self, text: impl Iterator<Item = String>) -> CompletionBufferInfo {
         // TODO: This needs refactor
 
         let mut lines = text.peekable();
 
-        let model = if let Some(model_line) = lines.peek()
-            && let Some(captures) = MODEL_REGEX.captures(model_line)
-            && let Some(model_name) = captures.get(1)
-            && let Some(model) = AVAILABLE_MODELS.get(model_name.as_str())
-        {
-            debug!("Model provided");
+        let parsed_model = lines
+            .peek()
+            .map(String::as_str)
+            .and_then(|l| self.parse_model_line(l));
+
+        let model = if let Some(model) = parsed_model {
+            debug!("Model provided: {model}");
             _ = lines.next();
-            model.trim().to_string()
+            model
         } else {
-            debug!("Valid model not provided, using default");
-            DEFAULT_MODEL.to_string()
+            debug!(
+                "Valid model not provided, using default: {}",
+                self.default_model_name
+            );
+            self.default_model_name.to_string()
         };
+
+        let model = self
+            .available_models
+            .get(&model)
+            .unwrap_or_else(|| {
+                error!(
+                    "Invalid model: {model}, using default: {}",
+                    self.default_model
+                );
+                &self.default_model
+            })
+            .clone();
 
         debug!("Using model: {model}");
 
@@ -80,11 +125,21 @@ impl CompletionBufferInfo {
             }
         }
 
-        // Valid content should start with USER_HEADER
-        if !matches!(lines.peek().map(String::as_str), Some(USER_HEADER)) {
+        if let Some(line) = lines.peek() {
+            if *line != self.user_header {
+                // First non-empty line is not user header, treating the whole buffer as
+                // unformatted user content
+                return CompletionBufferInfo {
+                    model,
+                    prompt: lines.join("\n"),
+                    history: Vec::new(),
+                };
+            }
+        } else {
+            // No lines
             return CompletionBufferInfo {
                 model,
-                prompt: lines.join("\n"),
+                prompt: "".into(),
                 history: Vec::new(),
             };
         }
@@ -95,38 +150,35 @@ impl CompletionBufferInfo {
 
         for line in lines {
             // TODO: Ugly
-            match line.as_str() {
-                "" if partial_msg.is_empty() => continue,
-                ASSISTANT_HEADER => {
-                    if !partial_msg.is_empty() {
-                        let message = if is_user_message {
-                            Message::user(partial_msg)
-                        } else {
-                            Message::assistant(partial_msg)
-                        };
-                        messages.push(message);
+            if line.is_empty() && partial_msg.is_empty() {
+                continue;
+            } else if line == self.assisstant_header {
+                if !partial_msg.is_empty() {
+                    let message = if is_user_message {
+                        Message::user(partial_msg)
+                    } else {
+                        Message::assistant(partial_msg)
+                    };
+                    messages.push(message);
 
-                        partial_msg = String::new();
-                    }
-                    is_user_message = false;
+                    partial_msg = String::new();
                 }
-                USER_HEADER => {
-                    if !partial_msg.is_empty() {
-                        let message = if is_user_message {
-                            Message::user(partial_msg)
-                        } else {
-                            Message::assistant(partial_msg)
-                        };
-                        messages.push(message);
+                is_user_message = false;
+            } else if line == self.user_header {
+                if !partial_msg.is_empty() {
+                    let message = if is_user_message {
+                        Message::user(partial_msg)
+                    } else {
+                        Message::assistant(partial_msg)
+                    };
+                    messages.push(message);
 
-                        partial_msg = String::new();
-                    }
-                    is_user_message = true;
+                    partial_msg = String::new();
                 }
-                l => {
-                    partial_msg.push_str(l);
-                    partial_msg.push('\n');
-                }
+                is_user_message = true;
+            } else {
+                partial_msg.push_str(&line);
+                partial_msg.push('\n');
             }
         }
 
@@ -145,6 +197,10 @@ impl CompletionBufferInfo {
             }
         }
     }
+
+    fn model_header(&self, model: &str) -> String {
+        self.model_header_format.replace("%MODEL%", model)
+    }
 }
 
 #[derive(derivative::Derivative)]
@@ -158,6 +214,8 @@ where
 
     #[derivative(Debug = "ignore")]
     agent_cache: Arc<CompletionCache>,
+
+    config: CompletionBufferConfig,
 }
 
 impl<E> CompletionBuffer<E>
@@ -166,27 +224,35 @@ where
     E::BufferHandle: CompleteBufferHandle,
 {
     pub fn create_new(editor: Arc<E>, agent_cache: Arc<CompletionCache>) -> Result<Self> {
-        let buf = editor.new_buffer()?;
+        let config = CompletionBufferConfig::default();
+        let buffer = editor.new_buffer()?;
         {
-            let mut buf = buf.write();
+            let mut lock = buffer.write();
 
-            buf.append(&format!("# Chosen model: {DEFAULT_MODEL_NAME}\n\n"))?;
+            editor.set_current_buffer(&mut lock)?;
 
-            buf.append(&format!("{USER_HEADER}\n\n"))?;
+            lock.append(&config.model_header(&config.default_model_name))?;
+            lock.append("\n\n")?;
 
-            editor.set_current_buffer(&mut buf)?;
+            lock.append(&config.user_header)?;
+            lock.append("\n\n")?;
 
-            let pos = buf.max_pos()?;
-            buf.set_cursor(&pos)?;
+            let pos = lock.max_pos()?;
+            lock.set_cursor(&pos)?;
         }
 
-        Ok(Self::create_from(buf, agent_cache))
+        Ok(Self::create_from(buffer, agent_cache, config))
     }
 
-    pub fn create_from(buf_handle: E::BufferHandle, agent_cache: Arc<CompletionCache>) -> Self {
+    pub fn create_from(
+        buffer: E::BufferHandle,
+        agent_cache: Arc<CompletionCache>,
+        config: CompletionBufferConfig,
+    ) -> Self {
         Self {
-            inner: buf_handle,
+            inner: buffer,
             agent_cache,
+            config,
         }
     }
 
@@ -239,7 +305,7 @@ where
         let info = {
             let lock = self.inner.read();
             let lines = lock.get_all_lines()?;
-            CompletionBufferInfo::parse_content(lines)
+            self.config.parse_content(lines)
         };
 
         let agent = self.agent_cache.get_model(&info.model);
@@ -248,7 +314,9 @@ where
 
         let mut lock = self.inner.write();
 
-        lock.append(&format!("\n\n{ASSISTANT_HEADER}\n\n\n"))?;
+        lock.append("\n\n")?;
+        lock.append(&self.config.assisstant_header)?;
+        lock.append("\n\n\n")?;
 
         let max_pos = lock.max_pos()?;
         let insert_mark = Mark::new(&self.inner, &max_pos.clone().prev_row(), &mut *lock)?;
@@ -274,9 +342,11 @@ where
             self.inner.write().append("\n\nInference failed\n\n")?;
         }
 
-        self.inner
-            .write()
-            .append(&format!("\n\n{USER_HEADER}\n\n"))?;
+        let mut lock = self.inner.write();
+
+        lock.append("\n\n")?;
+        lock.append(&self.config.user_header)?;
+        lock.append("\n\n")?;
 
         insert_result
     }
