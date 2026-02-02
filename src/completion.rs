@@ -4,7 +4,7 @@ use futures::StreamExt;
 use rig::{
     agent::{Agent, MultiTurnStreamItem},
     message::Message,
-    providers::openrouter::{CompletionModel, streaming::FinalCompletionResponse},
+    providers::openrouter::{CompletionModel, streaming::StreamingCompletionResponse},
     streaming::{StreamedAssistantContent, StreamingChat},
 };
 use tokio::runtime::Runtime;
@@ -48,7 +48,7 @@ impl Completion {
     }
 
     fn map_chunk<E>(
-        chunk: std::result::Result<MultiTurnStreamItem<FinalCompletionResponse>, E>,
+        chunk: std::result::Result<MultiTurnStreamItem<StreamingCompletionResponse>, E>,
     ) -> Result<CompletionChunk>
     where
         E: std::error::Error,

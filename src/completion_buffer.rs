@@ -21,7 +21,7 @@ use eel::{
     region::BufferRegion,
 };
 
-use crate::{Result, agent_cache::CompletionCache, completion::CompletionChunk};
+use crate::{Result, completion::CompletionChunk, completion_cache::CompletionCache};
 
 struct CompletionBufferInfo {
     model: String,
@@ -213,7 +213,7 @@ where
     inner: E::BufferHandle,
 
     #[derivative(Debug = "ignore")]
-    agent_cache: Arc<CompletionCache>,
+    completion_cache: Arc<CompletionCache>,
 
     config: CompletionBufferConfig,
 }
@@ -223,7 +223,7 @@ where
     E: Editor,
     E::BufferHandle: CompleteBufferHandle,
 {
-    pub fn create_new(editor: Arc<E>, agent_cache: Arc<CompletionCache>) -> Result<Self> {
+    pub fn create_new(editor: Arc<E>, completion_cache: Arc<CompletionCache>) -> Result<Self> {
         let config = CompletionBufferConfig::default();
         let buffer = editor.new_buffer()?;
         {
@@ -241,17 +241,17 @@ where
             lock.set_cursor(&pos)?;
         }
 
-        Ok(Self::create_from(buffer, agent_cache, config))
+        Ok(Self::create_from(buffer, completion_cache, config))
     }
 
     pub fn create_from(
         buffer: E::BufferHandle,
-        agent_cache: Arc<CompletionCache>,
+        completion_cache: Arc<CompletionCache>,
         config: CompletionBufferConfig,
     ) -> Self {
         Self {
             inner: buffer,
-            agent_cache,
+            completion_cache,
             config,
         }
     }
@@ -308,7 +308,7 @@ where
             self.config.parse_content(lines)
         };
 
-        let agent = self.agent_cache.get_model(&info.model);
+        let agent = self.completion_cache.get_model(&info.model);
 
         let stream = agent.stream_chat(&info.prompt, info.history).into_iter();
 

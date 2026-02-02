@@ -1,85 +1,18 @@
-use std::sync::{Arc, OnceLock};
-
-use eel_nvim::editor::NvimEditor;
-use tracing::debug;
-
-use crate::{
-    agent_cache::CompletionCache, api_key::get_api_key, completion_buffer::CompletionBufferConfig,
-};
-use eel::{CompleteBufferHandle, Editor};
-
 mod error;
 
-mod agent_cache;
-mod api_key;
 mod completion;
 mod completion_buffer;
+mod completion_cache;
+
+mod api_key_utils;
+pub use api_key_utils::{ApiKeyCache, pass_getter};
+
+mod plugin;
+pub use plugin::StaticRig;
+
+pub mod nvim;
 
 pub use completion_buffer::CompletionBuffer;
 
 type Error = error::Error;
 type Result<T> = std::result::Result<T, Error>;
-
-struct Plugin<E>
-where
-    E: Editor,
-    E::BufferHandle: CompleteBufferHandle,
-{
-    editor: Arc<E>,
-    agent_cache: Arc<CompletionCache>,
-}
-
-impl<E> Plugin<E>
-where
-    E: Editor,
-    E::BufferHandle: CompleteBufferHandle,
-{
-    fn new(editor: Arc<E>, api_key: &str) -> Result<Self> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let cache = CompletionCache::new(api_key, Arc::new(runtime));
-
-        Ok(Self {
-            editor,
-            agent_cache: Arc::new(cache),
-        })
-    }
-}
-
-static PLUGIN: OnceLock<Plugin<NvimEditor>> = OnceLock::new();
-
-fn get_instance() -> Result<&'static Plugin<NvimEditor>> {
-    PLUGIN.get().ok_or(error::Error::Uninitialized)
-}
-
-pub fn setup_rig(editor: Arc<NvimEditor>, api_key_location: &str) -> Result<()> {
-    let api_key = get_api_key(api_key_location)?;
-
-    debug!("Initializing nvim-rig");
-
-    _ = PLUGIN
-        .set(Plugin::new(editor, &api_key)?)
-        .inspect_err(|_| tracing::warn!("Rig setup called more than once"));
-
-    Ok(())
-}
-
-pub fn setup_prompt_buffer() -> Result<()> {
-    CompletionBuffer::<NvimEditor>::create_new(
-        get_instance()?.editor.clone(),
-        get_instance()?.agent_cache.clone(),
-    )?;
-
-    Ok(())
-}
-
-pub fn prompt_buffer() -> Result<()> {
-    let buffer = CompletionBuffer::<NvimEditor>::create_from(
-        get_instance()?.editor.current_buffer()?,
-        get_instance()?.agent_cache.clone(),
-        CompletionBufferConfig::default(),
-    );
-
-    buffer.perform_prompt()?;
-
-    Ok(())
-}
