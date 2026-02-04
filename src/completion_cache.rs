@@ -6,6 +6,37 @@ use tokio::runtime::Runtime;
 
 use crate::{Result, completion::Completion, plugin::ApiKeyGetter};
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompletionConfig {
+    model: String,
+    preamble: String,
+}
+
+impl CompletionConfig {
+    pub fn new_with_preamble(model: impl Into<String>, preamble: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            preamble: preamble.into(),
+        }
+    }
+
+    pub fn new(model: String) -> Self {
+        Self::new_with_preamble(
+            model,
+            r#"
+### Role and Persona
+You are a precise and structured AI assistant. Your goal is to provide clear, accurate responses.
+
+### Output Format Guidelines
+**Markdown Structure**:
+- Use Markdown for all output.
+- **Never** use Heading Level 1 (#).
+- Start all section headers at Heading Level 2 (##) or deeper (###, ####).
+"#,
+        )
+    }
+}
+
 struct CompletionFactory {
     client: Client,
     runtime: Arc<Runtime>,
@@ -23,23 +54,12 @@ impl CompletionFactory {
         })
     }
 
-    pub fn create_completion(&self, model: &str) -> Completion {
+    pub fn create_completion(&self, config: &CompletionConfig) -> Completion {
         // Rig agent builder requires to be in tokio context
         let agent = self.runtime.block_on(async {
             self.client
-                .agent(model)
-                .preamble(
-                    r#"
-### Role and Persona
-You are a precise and structured AI assistant. Your goal is to provide clear, accurate responses.
-
-### Output Format Guidelines
-**Markdown Structure**:
-- Use Markdown for all output.
-- **Never** use Heading Level 1 (#).
-- Start all section headers at Heading Level 2 (##) or deeper (###, ####).
-"#,
-                )
+                .agent(&config.model)
+                .preamble(&config.preamble)
                 .build()
         });
 
@@ -49,7 +69,7 @@ You are a precise and structured AI assistant. Your goal is to provide clear, ac
 
 pub struct CompletionCache {
     factory: CompletionFactory,
-    agents: RwLock<HashMap<String, Arc<Completion>>>,
+    agents: RwLock<HashMap<CompletionConfig, Arc<Completion>>>,
 }
 
 impl CompletionCache {
@@ -60,11 +80,11 @@ impl CompletionCache {
         })
     }
 
-    pub fn get_model(&self, model: &str) -> Arc<Completion> {
+    pub fn get_completion(&self, config: &CompletionConfig) -> Arc<Completion> {
         {
             let agents_guard = self.agents.read();
 
-            if let Some(agent) = agents_guard.get(model) {
+            if let Some(agent) = agents_guard.get(config) {
                 return agent.clone();
             }
         }
@@ -72,8 +92,8 @@ impl CompletionCache {
         let mut agents_guard = self.agents.write();
 
         agents_guard
-            .entry(model.into())
-            .or_insert_with(|| Arc::new(self.factory.create_completion(model)))
+            .entry(config.clone())
+            .or_insert_with(|| Arc::new(self.factory.create_completion(config)))
             .clone()
     }
 }

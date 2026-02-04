@@ -21,7 +21,11 @@ use eel::{
     region::BufferRegion,
 };
 
-use crate::{Result, completion::CompletionChunk, completion_cache::CompletionCache};
+use crate::{
+    Result,
+    completion::CompletionChunk,
+    completion_cache::{CompletionCache, CompletionConfig},
+};
 
 struct CompletionBufferInfo {
     model: String,
@@ -308,7 +312,9 @@ where
             self.config.parse_content(lines)
         };
 
-        let agent = self.completion_cache.get_model(&info.model);
+        let agent = self
+            .completion_cache
+            .get_completion(&CompletionConfig::new(info.model));
 
         let stream = agent.stream_chat(&info.prompt, info.history).into_iter();
 
