@@ -42,11 +42,6 @@ impl Completion {
         Self { agent, runtime }
     }
 
-    #[allow(dead_code)]
-    pub fn stream_prompt(&self, prompt: &str) -> impl IntoIterator<Item = Result<CompletionChunk>> {
-        self.stream_chat(prompt, Vec::new())
-    }
-
     fn map_chunk<E>(
         chunk: std::result::Result<MultiTurnStreamItem<StreamingCompletionResponse>, E>,
     ) -> Result<CompletionChunk>
@@ -79,10 +74,9 @@ impl Completion {
 
     pub fn stream_chat(
         &self,
-        prompt: &str,
         chat_history: Vec<Message>,
     ) -> impl IntoIterator<Item = Result<CompletionChunk>> {
-        let stream = self.agent.stream_chat(prompt, chat_history);
+        let stream = self.agent.stream_chat("", chat_history);
 
         let (tx, rx) = std::sync::mpsc::channel();
 

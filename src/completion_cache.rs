@@ -8,32 +8,16 @@ use crate::{Result, completion::Completion, plugin::ApiKeyGetter};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompletionConfig {
-    model: String,
-    preamble: String,
+    pub model: String,
+    pub preamble: String,
 }
 
 impl CompletionConfig {
-    pub fn new_with_preamble(model: impl Into<String>, preamble: impl Into<String>) -> Self {
+    pub fn new(model: impl Into<String>, preamble: impl Into<String>) -> Self {
         Self {
             model: model.into(),
             preamble: preamble.into(),
         }
-    }
-
-    pub fn new(model: String) -> Self {
-        Self::new_with_preamble(
-            model,
-            r#"
-### Role and Persona
-You are a precise and structured AI assistant. Your goal is to provide clear, accurate responses.
-
-### Output Format Guidelines
-**Markdown Structure**:
-- Use Markdown for all output.
-- **Never** use Heading Level 1 (#).
-- Start all section headers at Heading Level 2 (##) or deeper (###, ####).
-"#,
-        )
     }
 }
 

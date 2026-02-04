@@ -3,8 +3,7 @@ use std::sync::Arc;
 use eel::{CompleteBufferHandle, Editor};
 
 use crate::{
-    CompletionBuffer, Result, completion_buffer::CompletionBufferConfig,
-    completion_cache::CompletionCache,
+    Result, RigBuffer, completion_cache::CompletionCache, rig_buffer_format::RigBufferFormat,
 };
 
 pub trait ApiKeyGetter: Send + Sync {
@@ -52,16 +51,16 @@ where
     }
 
     pub fn rig_buffer(&self) -> Result<()> {
-        CompletionBuffer::<E>::create_new(self.editor.clone(), self.completion_cache.clone())?;
+        RigBuffer::<E>::create_new(self.editor.clone(), self.completion_cache.clone())?;
 
         Ok(())
     }
 
     pub fn prompt_buffer(&self) -> Result<()> {
-        let buffer = CompletionBuffer::<E>::create_from(
+        let buffer = RigBuffer::<E>::create_from(
             self.editor.current_buffer()?,
             self.completion_cache.clone(),
-            CompletionBufferConfig::default(),
+            RigBufferFormat::default(),
         );
 
         buffer.perform_prompt()?;
